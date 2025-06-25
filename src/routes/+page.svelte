@@ -22,7 +22,34 @@
     totalMerges: 0
   };
 
+  let displayStats = {
+    totalVisits: 0,
+    totalMerges: 0
+  };
+
   let activeIndex = 0;
+
+  function animateValue(start: number, end: number, duration: number, callback: (value: number) => void) {
+    const startTime = performance.now();
+    const change = end - start;
+    
+    function update(currentTime: number) {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      
+      // Easing function for smooth animation
+      const easeOutQuart = 1 - Math.pow(1 - progress, 4);
+      const currentValue = Math.floor(start + change * easeOutQuart);
+      
+      callback(currentValue);
+      
+      if (progress < 1) {
+        requestAnimationFrame(update);
+      }
+    }
+    
+    requestAnimationFrame(update);
+  }
 
   const testimonials = [
     {
@@ -88,6 +115,15 @@
     try {
       const response = await fetch('/api/analytics');
       stats = await response.json();
+      
+      // Animate the stats when they load
+      animateValue(0, stats.totalVisits, 2000, (value) => {
+        displayStats.totalVisits = value;
+      });
+      
+      animateValue(0, stats.totalMerges, 2000, (value) => {
+        displayStats.totalMerges = value;
+      });
     } catch (error) {
       console.error('Error loading stats:', error);
     }
@@ -242,7 +278,7 @@
             <span class="text-base font-semibold text-gray-700">Total Visitors</span>
           </div>
           <div class="text-5xl font-extrabold text-indigo-700 text-center tracking-tight">
-            {stats.totalVisits.toLocaleString()}
+            {displayStats.totalVisits.toLocaleString()}
           </div>
           <div class="text-sm text-gray-500 text-center mt-2 flex items-center justify-center gap-1">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -260,7 +296,7 @@
             <span class="text-base font-semibold text-gray-700">PDFs Merged</span>
           </div>
           <div class="text-5xl font-extrabold text-green-700 text-center tracking-tight">
-            {stats.totalMerges.toLocaleString()}
+            {displayStats.totalMerges.toLocaleString()}
           </div>
           <div class="text-sm text-gray-500 text-center mt-2 flex items-center justify-center gap-1">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
