@@ -1,7 +1,10 @@
 import { writable } from "svelte/store";
 
 // Simple analytics tracking
-export const trackEvent = async (type: "visit" | "merge") => {
+export const trackEvent = async (
+  type: "visit" | "merge" | "split" | "visit_split",
+  pageCount?: number
+) => {
   try {
     // Only track if the user hasn't opted out
     if (localStorage.getItem("analytics-opt-out") === "true") return;
@@ -10,6 +13,7 @@ export const trackEvent = async (type: "visit" | "merge") => {
       userAgent: navigator.userAgent,
       referrer: document.referrer,
       page: window.location.pathname,
+      pageCount: pageCount || 0,
     };
 
     await fetch("/api/analytics", {

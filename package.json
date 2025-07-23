@@ -1,5 +1,5 @@
 {
-  "name": "pdf-merger",
+  "name": "securepdf",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -35,7 +35,10 @@
   "dependencies": {
     "bits-ui": "^1.5.1",
     "drizzle-orm": "^0.44.2",
+    "jszip": "^3.10.1",
+    "lucide-svelte": "^0.525.0",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "3.11.174",
     "postgres": "^3.4.7"
   }
 }

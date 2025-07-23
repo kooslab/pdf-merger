@@ -6,5 +6,6 @@ export const events = pgTable('events', {
   userAgent: text('user_agent'),
   referrer: text('referrer'),
   page: text('page'),
+  pageCount: integer('page_count').default(0),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });

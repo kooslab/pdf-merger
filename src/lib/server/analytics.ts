@@ -1,6 +1,6 @@
 import { db } from "$lib/db";
 import { events } from "$lib/db/schema";
-import { eq, count } from "drizzle-orm";
+import { eq, sum, count } from "drizzle-orm";
 
 // Get aggregated stats from events
 export async function getStats() {
@@ -10,21 +10,32 @@ export async function getStats() {
       .from(events)
       .where(eq(events.type, "visit"));
 
-    const mergeCount = await db
-      .select({ count: count() })
+    const mergeStats = await db
+      .select({ 
+        totalPages: sum(events.pageCount)
+      })
       .from(events)
       .where(eq(events.type, "merge"));
 
+    const splitStats = await db
+      .select({ 
+        totalPages: sum(events.pageCount)
+      })
+      .from(events)
+      .where(eq(events.type, "split"));
+
     return {
       totalVisits: visitCount[0]?.count || 0,
-      totalMerges: mergeCount[0]?.count || 0,
+      totalPagesMerged: Number(mergeStats[0]?.totalPages || 0),
+      totalPagesSplit: Number(splitStats[0]?.totalPages || 0),
       lastUpdated: new Date().toISOString(),
     };
   } catch (error) {
     console.error("Error fetching stats:", error);
     return {
       totalVisits: 0,
-      totalMerges: 0,
+      totalPagesMerged: 0,
+      totalPagesSplit: 0,
       lastUpdated: new Date().toISOString(),
     };
   }
@@ -32,8 +43,13 @@ export async function getStats() {
 
 // Store individual event
 export async function updateStats(
-  type: "visit" | "merge",
-  metadata?: { userAgent?: string; referrer?: string; page?: string }
+  type: "visit" | "merge" | "split" | "visit_split",
+  metadata?: { 
+    userAgent?: string; 
+    referrer?: string; 
+    page?: string;
+    pageCount?: number;
+  }
 ) {
   try {
     await db.insert(events).values({
@@ -41,6 +57,7 @@ export async function updateStats(
       userAgent: metadata?.userAgent,
       referrer: metadata?.referrer,
       page: metadata?.page,
+      pageCount: metadata?.pageCount || 0,
     });
 
     // Return updated stats
