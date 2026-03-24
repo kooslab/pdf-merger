@@ -6,26 +6,140 @@
   import { onMount } from 'svelte';
   import { toast } from '$lib/stores/toast';
   import Modal from '$lib/components/Modal.svelte';
+  import { browser } from '$app/environment';
+
+  let pdfjsLib: any;
+
+  // Dynamically import pdfjs only on client side
+  if (browser) {
+    import('pdfjs-dist').then(module => {
+      pdfjsLib = module;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+    });
+  }
 
   let statusEl: HTMLElement;
   let mergeBtn: HTMLButtonElement;
   let isDragging = false;
   let showTermsModal = false;
-  
-  // Store selected files
+  let showFilenameModal = false;
+  let downloadFilename = "merged";
+  let pendingDownload: { blob: Blob; pageCount: number } | null = null;
+
+  // Store selected files with page previews
   let selectedFiles: Array<{
     id: string;
     file: File;
     pages: string;
+    pageCount: number;
+    pagePreviews: Array<{ pageNumber: number; aspectRatio: number; canvas?: HTMLCanvasElement }>;
+    isLoadingPreviews: boolean;
+    error?: string;
+    isEncrypted?: boolean;
   }> = [];
 
-  function addFileToList(file: File) {
+  async function addFileToList(file: File) {
     const fileId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-    selectedFiles = [...selectedFiles, {
+    const newFile = {
       id: fileId,
       file: file,
       pages: "all",
-    }];
+      pageCount: 0,
+      pagePreviews: [] as Array<{ pageNumber: number; aspectRatio: number; canvas?: HTMLCanvasElement }>,
+      isLoadingPreviews: true,
+    };
+    selectedFiles = [...selectedFiles, newFile];
+
+    // Generate previews asynchronously
+    await generatePreviewsForFile(fileId, file);
+  }
+
+  async function generatePreviewsForFile(fileId: string, file: File) {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+
+      // Load with pdf-lib for page count and dimensions
+      // ignoreEncryption allows reading encrypted PDFs (we can still get page info)
+      const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+      const pageCount = pdfDoc.getPageCount();
+      const isEncrypted = pdfDoc.isEncrypted;
+
+      // Wait for pdfjs to load if in browser
+      if (browser) {
+        let attempts = 0;
+        while (!pdfjsLib && attempts < 10) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+        }
+      }
+
+      const pagePreviews: Array<{ pageNumber: number; aspectRatio: number; canvas?: HTMLCanvasElement }> = [];
+
+      if (pdfjsLib) {
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdfJsDoc = await loadingTask.promise;
+        const scale = 0.5;
+
+        for (let i = 0; i < pageCount; i++) {
+          try {
+            const page = await pdfJsDoc.getPage(i + 1);
+            const viewport = page.getViewport({ scale });
+
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+
+            const renderContext = {
+              canvasContext: context,
+              viewport: viewport
+            };
+            await page.render(renderContext).promise;
+
+            const pdfLibPage = pdfDoc.getPage(i);
+            const { width, height } = pdfLibPage.getSize();
+            const aspectRatio = width / height;
+
+            pagePreviews.push({
+              pageNumber: i + 1,
+              aspectRatio: aspectRatio,
+              canvas: canvas
+            });
+          } catch (error) {
+            console.error(`Error rendering preview for page ${i + 1}:`, error);
+            pagePreviews.push({
+              pageNumber: i + 1,
+              aspectRatio: 1.294
+            });
+          }
+        }
+      } else {
+        // Fallback without previews
+        for (let i = 0; i < pageCount; i++) {
+          const pdfLibPage = pdfDoc.getPage(i);
+          const { width, height } = pdfLibPage.getSize();
+          pagePreviews.push({
+            pageNumber: i + 1,
+            aspectRatio: width / height
+          });
+        }
+      }
+
+      // Update the file with previews
+      selectedFiles = selectedFiles.map(f =>
+        f.id === fileId
+          ? { ...f, pageCount, pagePreviews, isLoadingPreviews: false, isEncrypted }
+          : f
+      );
+    } catch (error) {
+      console.error('Error generating previews:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to load PDF';
+      selectedFiles = selectedFiles.map(f =>
+        f.id === fileId
+          ? { ...f, isLoadingPreviews: false, error: errorMessage }
+          : f
+      );
+    }
   }
 
   function removeFile(id: string) {
@@ -72,6 +186,35 @@
     showTermsModal = true;
   }
 
+  function handleDownload() {
+    if (!pendingDownload) return;
+
+    const filename = downloadFilename.trim() || "merged";
+    const finalFilename = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
+
+    const url = URL.createObjectURL(pendingDownload.blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = finalFilename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    // Track successful merge
+    trackEvent('merge', pendingDownload.pageCount);
+
+    statusEl.textContent = "PDFs merged successfully!";
+    showFilenameModal = false;
+    pendingDownload = null;
+  }
+
+  function cancelDownload() {
+    showFilenameModal = false;
+    pendingDownload = null;
+    statusEl.textContent = "Merge cancelled.";
+  }
+
   async function handleMerge() {
     if (selectedFiles.length === 0) {
       statusEl.textContent = "Please add at least one PDF file.";
@@ -86,8 +229,9 @@
 
       for (const fileData of selectedFiles) {
         const arrayBuffer = await fileData.file.arrayBuffer();
-        const srcPdf = await PDFDocument.load(arrayBuffer);
+        const srcPdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
         const totalPages = srcPdf.getPageCount();
+        const isEncrypted = srcPdf.isEncrypted;
         let pageIndices: number[] = [];
         const pages = fileData.pages.trim();
 
@@ -108,26 +252,58 @@
           pageIndices = pageIndices.filter((i) => i >= 0 && i < totalPages);
         }
 
-        const copiedPages = await mergedPdf.copyPages(srcPdf, pageIndices);
-        copiedPages.forEach((page) => mergedPdf.addPage(page));
+        if (isEncrypted && pdfjsLib) {
+          // For encrypted PDFs, render pages as images using pdf.js
+          statusEl.textContent = `Rendering encrypted PDF: ${fileData.file.name}...`;
+          const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+          const pdfJsDoc = await loadingTask.promise;
+          const scale = 2; // Higher scale for better quality
+
+          for (const pageIndex of pageIndices) {
+            const page = await pdfJsDoc.getPage(pageIndex + 1);
+            const viewport = page.getViewport({ scale });
+
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            // Convert canvas to PNG and embed in PDF
+            const pngDataUrl = canvas.toDataURL('image/png');
+            const pngData = await fetch(pngDataUrl).then(res => res.arrayBuffer());
+            const pngImage = await mergedPdf.embedPng(pngData);
+
+            // Get original page dimensions
+            const srcPage = srcPdf.getPage(pageIndex);
+            const { width, height } = srcPage.getSize();
+
+            // Add page with embedded image
+            const newPage = mergedPdf.addPage([width, height]);
+            newPage.drawImage(pngImage, {
+              x: 0,
+              y: 0,
+              width: width,
+              height: height,
+            });
+          }
+        } else {
+          // For non-encrypted PDFs, use normal copy method
+          const copiedPages = await mergedPdf.copyPages(srcPdf, pageIndices);
+          copiedPages.forEach((page) => mergedPdf.addPage(page));
+        }
       }
 
       const mergedPdfBytes = await mergedPdf.save();
       const blob = new Blob([mergedPdfBytes], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "merged.pdf";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      // Track successful merge with total page count
       const totalPagesMerged = mergedPdf.getPageCount();
-      trackEvent('merge', totalPagesMerged);
 
-      statusEl.textContent = "PDFs merged successfully!";
+      // Store for download and show filename modal
+      pendingDownload = { blob, pageCount: totalPagesMerged };
+      downloadFilename = "merged";
+      showFilenameModal = true;
+      statusEl.textContent = "";
     } catch (error: unknown) {
       console.error("Error merging PDFs:", error);
       statusEl.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -136,10 +312,12 @@
     }
   }
 
-  function handleFileSelect(event: Event) {
+  async function handleFileSelect(event: Event) {
     const input = event.target as HTMLInputElement;
     if (input.files?.length) {
-      Array.from(input.files).forEach(file => addFileToList(file));
+      for (const file of Array.from(input.files)) {
+        await addFileToList(file);
+      }
     }
   }
 </script>
@@ -230,6 +408,11 @@
                 id={file.id}
                 fileName={file.file.name}
                 pages={file.pages}
+                pageCount={file.pageCount}
+                pagePreviews={file.pagePreviews}
+                isLoadingPreviews={file.isLoadingPreviews}
+                error={file.error}
+                isEncrypted={file.isEncrypted}
                 onRemove={removeFile}
                 onPagesChange={updatePages}
                 on:reorder={handleReorder}
@@ -317,6 +500,38 @@
       </nav>
     </div>
   </footer>
+
+  <!-- Filename Modal -->
+  <Modal bind:isOpen={showFilenameModal} title="Save Merged PDF">
+    <div class="space-y-4">
+      <p class="text-gray-600">Enter a filename for your merged PDF:</p>
+      <div class="flex items-center gap-2">
+        <input
+          type="text"
+          bind:value={downloadFilename}
+          placeholder="merged"
+          autofocus
+          class="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+          on:keydown={(e) => e.key === 'Enter' && handleDownload()}
+        />
+        <span class="text-gray-500">.pdf</span>
+      </div>
+      <div class="flex gap-3 justify-end pt-2">
+        <button
+          on:click={cancelDownload}
+          class="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          on:click={handleDownload}
+          class="px-6 py-2 bg-gradient-to-r from-green-400 to-blue-500 text-white font-semibold rounded-lg hover:from-green-500 hover:to-blue-600 transition-all"
+        >
+          Download
+        </button>
+      </div>
+    </div>
+  </Modal>
 
   <!-- Terms Modal -->
   <Modal bind:isOpen={showTermsModal} title="Terms of Service">

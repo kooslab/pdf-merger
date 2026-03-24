@@ -72,7 +72,7 @@
       const arrayBuffer = await selectedFile.arrayBuffer();
       
       // Load with pdf-lib for manipulation
-      pdfDoc = await PDFDocument.load(arrayBuffer);
+      pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
       pdfPageCount = pdfDoc.getPageCount();
       
       // Wait for pdfjs to load if in browser
